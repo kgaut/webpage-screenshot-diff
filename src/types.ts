@@ -24,4 +24,6 @@ export type DiffResponse = {
   project: string;
   threshold: number;
   results: UrlResult[];
+  /** Returned only on the very first call for a brand new project. */
+  token?: string;
 };

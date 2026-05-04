@@ -8,6 +8,10 @@ une page a divergé au-delà du seuil autorisé.
 Inclut un mini front (Vite + React) qui affiche la liste des projets, les
 pages capturées et l'historique des screenshots avec miniatures.
 
+L'API et le dashboard sont protégés par des **tokens par projet** (générés
+au 1er run, hash stocké sur disque) et un éventuel **token admin global**
+via `ADMIN_TOKEN`.
+
 ## Fonctionnement
 
 - Un `POST /diff` reçoit un nom de projet, une liste d'URL et un seuil (% de
@@ -24,6 +28,10 @@ pages capturées et l'historique des screenshots avec miniatures.
   automatique).
 - Le dashboard est servi sur `/` et permet de naviguer projets → pages →
   historique.
+- Au tout premier `POST /diff` d'un nouveau projet, le service génère un
+  token aléatoire et le renvoie une seule fois dans la réponse. Tous les
+  appels suivants (CI ou dashboard) doivent fournir ce token (ou un token
+  admin global) pour accéder à ce projet.
 
 ## API
 
@@ -49,12 +57,18 @@ pages capturées et l'historique des screenshots avec miniatures.
 | `threshold` | `number` | `0` | Pourcentage de pixels modifiés autorisé (0–100). |
 | `updateBaselineOnFailure` | `boolean` | `false` | Si `true`, la baseline est remplacée même quand le seuil est dépassé. |
 | `viewport` | `{ width, height }` | env | Surcharge ponctuelle du viewport. |
+| `token` | `string` | — | Token du projet. Optionnel au 1er run (le projet est créé) ; **requis** ensuite, sauf si fourni via header. |
+
+Le token peut aussi être fourni via `Authorization: Bearer <token>` ou via la
+query string `?token=...`.
 
 Réponses :
 
 - `200 OK` — toutes les URL passent le seuil.
 - `422 Unprocessable Entity` — au moins une URL dépasse le seuil ou a échoué.
 - `400 Bad Request` — JSON invalide / nom de projet invalide.
+- `401 Unauthorized` — projet existant mais aucun token fourni (`{ "error": "missing_token" }`).
+- `403 Forbidden` — token invalide (`{ "error": "invalid_token" }`).
 
 Corps de réponse :
 
@@ -73,7 +87,8 @@ Corps de réponse :
       "screenshot": "/data/projects/acme/website/history/ab12.../<ts>.png",
       "diffImage": "/data/projects/acme/website/history/ab12.../<ts>.diff.png"
     }
-  ]
+  ],
+  "token": "<only-on-first-call-for-a-new-project>"
 }
 ```
 
@@ -94,6 +109,64 @@ Liveness probe (HTTP 200 si le serveur tourne).
   générée paresseusement (cache à côté du fichier source).
 
 Le nom de projet doit être URL-encodé dans le path (`acme%2Fwebsite`).
+
+## Tokens & accès
+
+### Génération
+
+Au tout premier `POST /diff` pour un nom de projet inconnu, le serveur :
+
+1. Génère un token aléatoire (32 octets, base64url ≈ 43 caractères).
+2. Persiste **uniquement le SHA-256** dans `<DATA_DIR>/tokens.json`.
+3. Renvoie le token en clair dans la réponse, sous la clé `token`. **Conservez-le** :
+   il n'est jamais ré-affiché.
+
+```jsonc
+// /data/tokens.json (mode 0600, jamais servi par HTTP)
+{
+  "acme/website": {
+    "tokenHash": "9f0a…",
+    "createdAt": "2026-05-04T13:30:00.000Z"
+  }
+}
+```
+
+### Utilisation
+
+Tous les endpoints protégés acceptent le token via, par ordre de priorité :
+
+1. Query string : `?token=<TOKEN>`
+2. Header : `Authorization: Bearer <TOKEN>`
+3. Body JSON (uniquement `POST /diff`) : `{ "token": "<TOKEN>", ... }`
+
+### Token global
+
+Définissez `ADMIN_TOKEN` au lancement du conteneur pour disposer d'un token
+qui passe sur **tous** les projets (lecture + écriture, vue agrégée du
+dashboard) :
+
+```bash
+docker run -e ADMIN_TOKEN="$(openssl rand -base64 32)" ...
+```
+
+Sans `ADMIN_TOKEN`, le dashboard ne peut afficher qu'un projet à la fois
+(celui dont on possède le token).
+
+### Erreurs
+
+| Code | Body | Cas |
+|------|------|-----|
+| 401 | `{ "error": "missing_token" }` | aucun token fourni sur un endpoint protégé |
+| 403 | `{ "error": "invalid_token" }` | token fourni mais ne correspond pas |
+
+### Règles de sécurité
+
+- Les tokens ne sont **jamais** loggés ; seul le hash est stocké.
+- Comparaison via `crypto.timingSafeEqual`.
+- `tokens.json` est en mode `0600`, n'est exposé par **aucun** endpoint
+  HTTP (pas de static `/data`).
+- Le SPA strippe automatiquement `?token=...` de l'URL après lecture pour
+  éviter de l'inscrire dans l'historique du navigateur.
 
 ## Layout du volume
 
@@ -130,6 +203,7 @@ dans deux projets a deux baselines indépendantes.
 | `NAVIGATION_TIMEOUT_MS` | `30000` | Timeout `page.goto`. |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `WEB_DIST_DIR` | auto | Surcharge le chemin du build SPA (sinon `web/dist` à côté du binaire). |
+| `ADMIN_TOKEN` | — | Token global donnant accès à tous les projets. Si absent, seul le token de chaque projet permet d'y accéder. |
 
 ## Docker
 
@@ -186,7 +260,7 @@ Trois stratégies possibles :
 
 ## Exemples d'appels
 
-### Premier run (création des baselines)
+### Premier run (création du projet et du token)
 
 ```bash
 curl -X POST http://localhost:3000/diff \
@@ -199,15 +273,19 @@ curl -X POST http://localhost:3000/diff \
       "https://example.com/pricing"
     ]
   }'
+# → 200 ; conserver précieusement le champ `token` de la réponse :
+#   {"ok":true, "project":"acme/website", "token":"…", "results":[…]}
 ```
 
-→ HTTP 200, chaque résultat avec `"created": true`.
+Le token n'est renvoyé qu'une fois. À stocker dans le secret store de la
+pipeline (par ex. GitHub Actions secret `SCREENSHOT_DIFF_TOKEN`).
 
-### Run de comparaison
+### Run de comparaison (avec token)
 
 ```bash
-curl -X POST http://localhost:3000/diff \
+curl -X POST "http://localhost:3000/diff" \
   -H 'content-type: application/json' \
+  -H "Authorization: Bearer $SCREENSHOT_DIFF_TOKEN" \
   -d '{
     "project": "acme/website",
     "threshold": 0.1,
@@ -216,13 +294,15 @@ curl -X POST http://localhost:3000/diff \
   }'
 ```
 
-→ HTTP 200 si `diffRatio * 100 <= threshold`, HTTP 422 sinon.
+→ HTTP 200 si `diffRatio * 100 <= threshold`, HTTP 422 sinon, HTTP 401/403
+si le token manque ou est invalide.
 
 ### Forcer la mise à jour des baselines (refonte CSS volontaire)
 
 ```bash
 curl -X POST http://localhost:3000/diff \
   -H 'content-type: application/json' \
+  -H "Authorization: Bearer $SCREENSHOT_DIFF_TOKEN" \
   -d '{
     "project": "acme/website",
     "threshold": 100,
@@ -230,6 +310,15 @@ curl -X POST http://localhost:3000/diff \
     "urls": ["https://example.com/"]
   }'
 ```
+
+### Ouvrir le dashboard
+
+```text
+http://localhost:3000/?token=<TOKEN>
+```
+
+Le SPA enregistre le token en `localStorage` et le retire de l'URL. Pour un
+accès admin, utilisez `?token=$ADMIN_TOKEN` à la place.
 
 ### Faire échouer le job CI sur 422
 
@@ -263,15 +352,18 @@ jobs:
           docker run -d --name diff -p 3000:3000 \
             -v "$PWD/screenshots:/data" \
             -e HISTORY_SIZE=15 \
-            ghcr.io/<org>/screenshot-diff:latest
+            ghcr.io/kgaut/webpage-screenshot-diff:latest
           for i in {1..30}; do
             curl -fsS http://localhost:3000/healthz && break
             sleep 1
           done
 
       - name: Run visual diff
+        env:
+          SD_TOKEN: ${{ secrets.SCREENSHOT_DIFF_TOKEN }}
         run: |
-          jq --arg p "$PROJECT" '. + {project: $p}' .github/visual-urls.json \
+          jq --arg p "$PROJECT" --arg t "$SD_TOKEN" \
+             '. + {project: $p, token: $t}' .github/visual-urls.json \
             | curl -fsS -X POST http://localhost:3000/diff \
                 -H 'content-type: application/json' \
                 -d @- \
@@ -306,7 +398,8 @@ visual-regression:
         $CI_REGISTRY_IMAGE/screenshot-diff:latest
     - until curl -fsS http://docker:3000/healthz; do sleep 1; done
     - |
-      jq --arg p "$PROJECT" '. + {project: $p}' ci/visual-urls.json \
+      jq --arg p "$PROJECT" --arg t "$SCREENSHOT_DIFF_TOKEN" \
+         '. + {project: $p, token: $t}' ci/visual-urls.json \
         | curl -fsS -X POST http://docker:3000/diff \
             -H 'content-type: application/json' \
             -d @-
@@ -314,6 +407,38 @@ visual-regression:
     when: on_failure
     paths: [screenshots/projects]
 ```
+
+## CI / CD
+
+Deux workflows GitHub Actions sont fournis :
+
+- **`.github/workflows/ci.yml`** — sur chaque PR vers `main` (et chaque push sur
+  `main`) : `npm ci`, `biome check`, `tsc`, build SPA, `vitest`. Garde le code
+  conforme et les tests verts.
+- **`.github/workflows/docker-publish.yml`** — sur push `main` et tags
+  `v*.*.*` : login GHCR (`GITHUB_TOKEN` / `packages: write`), build multi-stage,
+  push de l'image avec les tags `latest` (sur main), version sémantique (`v1.2.3` →
+  `1.2.3`, `1.2`, `1`) et SHA court. L'image est publiée sur
+  `ghcr.io/<org>/<repo>`.
+
+Pour tirer la dernière image :
+
+```bash
+docker pull ghcr.io/kgaut/webpage-screenshot-diff:latest
+```
+
+## Tests & qualité de code
+
+- **Biome** — lint + format en un seul outil.
+  - `npm run check` : vérification (utilisé en CI).
+  - `npm run format` : applique le formatter.
+  - `npm run lint` : lint seul.
+- **vitest** — 58 tests unitaires + intégration HTTP via supertest. Ils couvrent
+  la diff PNG, le storage, la rotation, la concurrence, le hash, le parsing de
+  config, les primitives de token, le middleware d'auth et le flux complet
+  `POST /diff` + `/api/projects` (avec `captureUrl` mocké).
+  - `npm test` : run unique.
+  - `npm run test:watch` : watch mode.
 
 ## Développement local
 

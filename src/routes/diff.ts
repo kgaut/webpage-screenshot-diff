@@ -1,12 +1,15 @@
 import { promises as fs } from "node:fs";
 import type { Request, Response } from "express";
 import { z } from "zod";
-import type { Config } from "../config.js";
+import type { TokenStore } from "../auth.js";
 import { captureUrl } from "../capture.js";
 import { mapConcurrent } from "../concurrency.js";
+import type { Config } from "../config.js";
 import { comparePngs } from "../diff.js";
 import { sha256 } from "../hash.js";
+import { type AuthOptions, authoriseProject } from "../middleware/auth.js";
 import {
+  type ProjectPaths,
   buildProjectPaths,
   ensureLayout,
   ensureRoot,
@@ -18,7 +21,6 @@ import {
   updateIndex,
   writeBaseline,
   writeHistory,
-  type ProjectPaths,
 } from "../storage.js";
 import type { DiffResponse, UrlResult } from "../types.js";
 
@@ -28,20 +30,19 @@ const viewportSchema = z.object({
 });
 
 const requestSchema = z.object({
-  project: z
-    .string()
-    .min(1)
-    .max(200)
-    .refine(isValidProjectName, {
-      message: "project must match [A-Za-z0-9._-] segments separated by '/'",
-    }),
+  project: z.string().min(1).max(200).refine(isValidProjectName, {
+    message: "project must match [A-Za-z0-9._-] segments separated by '/'",
+  }),
   threshold: z.number().min(0).max(100).default(0),
   updateBaselineOnFailure: z.boolean().default(false),
   viewport: viewportSchema.optional(),
   urls: z.array(z.string().url()).min(1).max(200),
+  token: z.string().optional(),
 });
 
-export const makeDiffHandler = (config: Config) => {
+export const makeDiffHandler = (config: Config, store: TokenStore) => {
+  const authOpts: AuthOptions = { adminToken: config.adminToken, store };
+
   return async (req: Request, res: Response): Promise<void> => {
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -52,13 +53,27 @@ export const makeDiffHandler = (config: Config) => {
     const effectiveViewport = viewport ?? config.defaultViewport;
 
     await ensureRoot(config.dataDir);
+
+    // Token gating: project creation requires no token (and emits one),
+    // existing projects require either the project token or the admin token.
+    const projectExists = await store.has(project);
+    let createdToken: string | null = null;
+    if (projectExists) {
+      const denial = await authoriseProject(authOpts, req, project);
+      if (denial) {
+        res.status(denial.status).json({ error: denial.error });
+        return;
+      }
+    } else {
+      const ensured = await store.ensure(project);
+      if (ensured.created) createdToken = ensured.token;
+    }
+
     const paths = buildProjectPaths(config.dataDir, project);
     await ensureLayout(paths);
 
-    const results = await mapConcurrent<string, UrlResult>(
-      urls,
-      config.maxConcurrency,
-      async (url) => processUrl(url, {
+    const results = await mapConcurrent<string, UrlResult>(urls, config.maxConcurrency, (url) =>
+      processUrl(url, {
         config,
         paths,
         threshold,
@@ -71,6 +86,7 @@ export const makeDiffHandler = (config: Config) => {
 
     const ok = results.every((r) => !r.thresholdExceeded && !r.error);
     const body: DiffResponse = { ok, project, threshold, results };
+    if (createdToken) body.token = createdToken;
     res.status(ok ? 200 : 422).json(body);
   };
 };

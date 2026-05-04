@@ -20,8 +20,7 @@ const PROJECTS_INDEX = "projects.json";
 
 export const projectsRoot = (dataDir: string): string => path.join(dataDir, "projects");
 
-export const projectsIndexPath = (dataDir: string): string =>
-  path.join(dataDir, PROJECTS_INDEX);
+export const projectsIndexPath = (dataDir: string): string => path.join(dataDir, PROJECTS_INDEX);
 
 export const buildProjectPaths = (dataDir: string, project: string): ProjectPaths => {
   if (!isValidProjectName(project)) {
@@ -65,10 +64,7 @@ export const fileExists = async (filePath: string): Promise<boolean> => {
   }
 };
 
-export const readBaseline = async (
-  paths: ProjectPaths,
-  hash: string,
-): Promise<Buffer | null> => {
+export const readBaseline = async (paths: ProjectPaths, hash: string): Promise<Buffer | null> => {
   const filePath = path.join(paths.baselineDir, `${hash}.png`);
   try {
     return await fs.readFile(filePath);
@@ -85,10 +81,7 @@ export const writeBaseline = async (
   meta: object,
 ): Promise<void> => {
   await writeAtomic(path.join(paths.baselineDir, `${hash}.png`), png);
-  await writeAtomic(
-    path.join(paths.baselineDir, `${hash}.json`),
-    JSON.stringify(meta, null, 2),
-  );
+  await writeAtomic(path.join(paths.baselineDir, `${hash}.json`), JSON.stringify(meta, null, 2));
 };
 
 export type HistoryEntry = {
@@ -98,8 +91,7 @@ export type HistoryEntry = {
   timestamp: string;
 };
 
-const isoCompactNow = (): string =>
-  new Date().toISOString().replace(/[:.]/g, "-");
+const isoCompactNow = (): string => new Date().toISOString().replace(/[:.]/g, "-");
 
 export const newHistoryEntry = (paths: ProjectPaths, hash: string): HistoryEntry => {
   const timestamp = isoCompactNow();
@@ -172,10 +164,7 @@ export const updateIndex = async (
   await writeAtomic(paths.indexFile, JSON.stringify(index, null, 2));
 };
 
-type ProjectsIndex = Record<
-  string,
-  { firstSeenAt: string; lastSeenAt: string }
->;
+type ProjectsIndex = Record<string, { firstSeenAt: string; lastSeenAt: string }>;
 
 export const recordProjectActivity = async (
   dataDir: string,
@@ -258,7 +247,9 @@ export const listPages = async (paths: ProjectPaths): Promise<PageSummary[]> => 
       try {
         const files = await fs.readdir(dir);
         const captures = files
-          .filter((f) => f.endsWith(".png") && !f.endsWith(".diff.png") && !f.endsWith(".thumb.png"))
+          .filter(
+            (f) => f.endsWith(".png") && !f.endsWith(".diff.png") && !f.endsWith(".thumb.png"),
+          )
           .map((f) => f.replace(/\.png$/, ""))
           .sort();
         captureCount = captures.length;
@@ -317,7 +308,13 @@ export const listHistory = async (
     .reverse();
   return Promise.all(
     timestamps.map(async (ts) => {
-      let meta: Partial<HistoryEntrySummary> & { capturedAt?: string; diffRatio?: number; threshold?: number; ok?: boolean; created?: boolean } = {};
+      let meta: Partial<HistoryEntrySummary> & {
+        capturedAt?: string;
+        diffRatio?: number;
+        threshold?: number;
+        ok?: boolean;
+        created?: boolean;
+      } = {};
       try {
         meta = JSON.parse(await fs.readFile(path.join(dir, `${ts}.json`), "utf8"));
       } catch {
