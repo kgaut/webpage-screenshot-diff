@@ -1,0 +1,18 @@
+services:
+  screenshot-diff:
+    build: .
+    image: screenshot-diff:latest
+    ports:
+      - "3000:3000"
+    environment:
+      DATA_DIR: /data
+      PORT: 3000
+      HISTORY_SIZE: 20
+      MAX_CONCURRENCY: 4
+      DEFAULT_VIEWPORT_WIDTH: 1440
+      DEFAULT_VIEWPORT_HEIGHT: 900
+      NAVIGATION_TIMEOUT_MS: 30000
+      LOG_LEVEL: info
+    volumes:
+      - ./screenshots:/data
+    restart: unless-stopped
