@@ -1,16 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import {
-  fetchHistory,
-  fileUrl,
-  thumbUrl,
-  type HistoryEntry,
-} from "../api";
+import { ApiError, type HistoryEntry, fetchHistory, fileUrl, thumbUrl } from "../api";
+import { useAuth } from "../auth";
 import { formatDiffPercent, formatTimestamp } from "../format";
 
 type Lightbox = { src: string } | null;
 
 export const HistoryPage = () => {
+  const { token, clear } = useAuth();
   const { project, hash } = useParams<{ project: string; hash: string }>();
   const [data, setData] = useState<{ url: string | null; entries: HistoryEntry[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -18,10 +15,15 @@ export const HistoryPage = () => {
 
   useEffect(() => {
     if (!project || !hash) return;
-    fetchHistory(project, hash)
+    fetchHistory(token, project, hash)
       .then((r) => setData({ url: r.url, entries: r.entries }))
-      .catch((err: Error) => setError(err.message));
-  }, [project, hash]);
+      .catch((err: Error) => {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          clear();
+        }
+        setError(err.message);
+      });
+  }, [token, clear, project, hash]);
 
   useEffect(() => {
     if (!lightbox) return;
@@ -44,38 +46,66 @@ export const HistoryPage = () => {
 
       {data?.url && (
         <div style={{ marginTop: 16 }}>
-          <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>
+          <div
+            className="muted"
+            style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}
+          >
             URL
           </div>
           <div className="url-text">
-            <a href={data.url} target="_blank" rel="noreferrer">{data.url}</a>
+            <a href={data.url} target="_blank" rel="noreferrer">
+              {data.url}
+            </a>
           </div>
         </div>
       )}
 
-      {error && <div className="error-box" style={{ marginTop: 12 }}>{error}</div>}
-      {!error && !data && <div className="muted" style={{ marginTop: 12 }}>Loading…</div>}
+      {error && (
+        <div className="error-box" style={{ marginTop: 12 }}>
+          {error}
+        </div>
+      )}
+      {!error && !data && (
+        <div className="muted" style={{ marginTop: 12 }}>
+          Loading…
+        </div>
+      )}
       {data && data.entries.length === 0 && (
-        <div className="empty" style={{ marginTop: 16 }}>No capture for this page.</div>
+        <div className="empty" style={{ marginTop: 16 }}>
+          No capture for this page.
+        </div>
       )}
 
       {data && data.entries.length > 0 && (
         <>
-          <h3 style={{ marginTop: 24, marginBottom: 8, fontSize: 14, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>
+          <h3
+            style={{
+              marginTop: 24,
+              marginBottom: 8,
+              fontSize: 14,
+              color: "var(--text-muted)",
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}
+          >
             Baseline
           </h3>
           <div className="history-grid">
             <div className="history-card">
               <img
                 className="thumb"
-                src={thumbUrl(project, hash, "baseline")}
+                src={thumbUrl(token, project, hash, "baseline")}
                 alt="baseline thumbnail"
-                onClick={() => setLightbox({ src: fileUrl(project, hash, "baseline") })}
+                onClick={() => setLightbox({ src: fileUrl(token, project, hash, "baseline") })}
               />
               <div className="meta">
                 <div className="row">
                   <span className="muted">Current reference</span>
-                  <a href={fileUrl(project, hash, "baseline")} target="_blank" rel="noreferrer">
+                  <a
+                    href={fileUrl(token, project, hash, "baseline")}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     full size
                   </a>
                 </div>
@@ -83,7 +113,16 @@ export const HistoryPage = () => {
             </div>
           </div>
 
-          <h3 style={{ marginTop: 24, marginBottom: 8, fontSize: 14, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>
+          <h3
+            style={{
+              marginTop: 24,
+              marginBottom: 8,
+              fontSize: 14,
+              color: "var(--text-muted)",
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}
+          >
             History ({data.entries.length})
           </h3>
           <div className="history-grid">
@@ -91,9 +130,13 @@ export const HistoryPage = () => {
               <div className="history-card" key={entry.timestamp}>
                 <img
                   className="thumb"
-                  src={thumbUrl(project, hash, "screenshot", entry.timestamp)}
+                  src={thumbUrl(token, project, hash, "screenshot", entry.timestamp)}
                   alt={`screenshot at ${entry.timestamp}`}
-                  onClick={() => setLightbox({ src: fileUrl(project, hash, "screenshot", entry.timestamp) })}
+                  onClick={() =>
+                    setLightbox({
+                      src: fileUrl(token, project, hash, "screenshot", entry.timestamp),
+                    })
+                  }
                 />
                 <div className="meta">
                   <div className="row">
@@ -112,15 +155,17 @@ export const HistoryPage = () => {
                   )}
                   {entry.hasDiffImage && (
                     <div className="diff-strip">
-                      <a
-                        href="#"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setLightbox({ src: fileUrl(project, hash, "diff", entry.timestamp) });
-                        }}
+                      <button
+                        type="button"
+                        className="diff-link"
+                        onClick={() =>
+                          setLightbox({
+                            src: fileUrl(token, project, hash, "diff", entry.timestamp),
+                          })
+                        }
                       >
                         view diff
-                      </a>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -146,7 +191,6 @@ const renderBadge = (entry: HistoryEntry) => {
   return <span className="badge warn">unknown</span>;
 };
 
-// Convert "2026-05-04T13-30-00-123Z" back to a parseable ISO string.
 const toIso = (compact: string): string => {
   const m = compact.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/);
   if (!m) return compact;

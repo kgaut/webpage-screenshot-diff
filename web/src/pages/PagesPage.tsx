@@ -1,19 +1,26 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { fetchPages, type PageSummary } from "../api";
-import { formatTimestamp, formatDiffPercent } from "../format";
+import { ApiError, type PageSummary, fetchPages } from "../api";
+import { useAuth } from "../auth";
+import { formatDiffPercent, formatTimestamp } from "../format";
 
 export const PagesPage = () => {
+  const { token, clear } = useAuth();
   const { project } = useParams<{ project: string }>();
   const [pages, setPages] = useState<PageSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!project) return;
-    fetchPages(project)
+    fetchPages(token, project)
       .then((r) => setPages(r.pages))
-      .catch((err: Error) => setError(err.message));
-  }, [project]);
+      .catch((err: Error) => {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          clear();
+        }
+        setError(err.message);
+      });
+  }, [token, clear, project]);
 
   if (!project) return null;
 
@@ -25,10 +32,20 @@ export const PagesPage = () => {
         <span>{project}</span>
       </div>
 
-      {error && <div className="error-box" style={{ marginTop: 12 }}>{error}</div>}
-      {!error && !pages && <div className="muted" style={{ marginTop: 12 }}>Loading…</div>}
+      {error && (
+        <div className="error-box" style={{ marginTop: 12 }}>
+          {error}
+        </div>
+      )}
+      {!error && !pages && (
+        <div className="muted" style={{ marginTop: 12 }}>
+          Loading…
+        </div>
+      )}
       {pages && pages.length === 0 && (
-        <div className="empty" style={{ marginTop: 16 }}>No page captured yet for this project.</div>
+        <div className="empty" style={{ marginTop: 16 }}>
+          No page captured yet for this project.
+        </div>
       )}
       {pages && pages.length > 0 && (
         <table style={{ marginTop: 16 }}>
@@ -45,10 +62,7 @@ export const PagesPage = () => {
             {pages.map((p) => (
               <tr key={p.hash}>
                 <td>
-                  <Link
-                    to={`/p/${encodeURIComponent(project)}/h/${p.hash}`}
-                    className="url-text"
-                  >
+                  <Link to={`/p/${encodeURIComponent(project)}/h/${p.hash}`} className="url-text">
                     {p.url}
                   </Link>
                 </td>

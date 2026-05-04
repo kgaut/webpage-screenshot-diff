@@ -1,25 +1,33 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchProjects, type ProjectSummary } from "../api";
+import { ApiError, type ProjectSummary, fetchProjects } from "../api";
+import { useAuth } from "../auth";
 import { formatTimestamp } from "../format";
 
 export const ProjectsPage = () => {
+  const { token, clear } = useAuth();
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchProjects()
+    fetchProjects(token)
       .then((r) => setProjects(r.projects))
-      .catch((err: Error) => setError(err.message));
-  }, []);
+      .catch((err: Error) => {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          clear();
+        }
+        setError(err.message);
+      });
+  }, [token, clear]);
 
   if (error) return <div className="error-box">{error}</div>;
   if (!projects) return <div className="muted">Loading…</div>;
   if (projects.length === 0) {
     return (
       <div className="empty">
-        No project yet. Trigger a <code>POST /diff</code> with a <code>project</code> field
-        to populate this dashboard.
+        No project visible with this token. If you have an admin token, set it as{" "}
+        <code>ADMIN_TOKEN</code> on the server. Otherwise trigger a <code>POST /diff</code> with a
+        new project name to mint one.
       </div>
     );
   }

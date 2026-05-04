@@ -24,23 +24,51 @@ export type HistoryEntry = {
   hasDiffImage: boolean;
 };
 
-const json = async <T>(url: string): Promise<T> => {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status} on ${url}`);
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+  ) {
+    super(`HTTP ${status} (${code})`);
+  }
+}
+
+const withToken = (url: string, token: string | null): string => {
+  if (!token) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+};
+
+const json = async <T>(url: string, token: string | null): Promise<T> => {
+  const res = await fetch(withToken(url, token));
+  if (!res.ok) {
+    let code = "http_error";
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") code = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, code);
+  }
   return (await res.json()) as T;
 };
 
-export const fetchProjects = (): Promise<{ projects: ProjectSummary[] }> =>
-  json("/api/projects");
+export const fetchProjects = (token: string | null): Promise<{ projects: ProjectSummary[] }> =>
+  json("/api/projects", token);
 
-export const fetchPages = (project: string): Promise<{ project: string; pages: PageSummary[] }> =>
-  json(`/api/projects/${encodeURIComponent(project)}/pages`);
+export const fetchPages = (
+  token: string | null,
+  project: string,
+): Promise<{ project: string; pages: PageSummary[] }> =>
+  json(`/api/projects/${encodeURIComponent(project)}/pages`, token);
 
 export const fetchHistory = (
+  token: string | null,
   project: string,
   hash: string,
 ): Promise<{ project: string; hash: string; url: string | null; entries: HistoryEntry[] }> =>
-  json(`/api/projects/${encodeURIComponent(project)}/pages/${hash}/history`);
+  json(`/api/projects/${encodeURIComponent(project)}/pages/${hash}/history`, token);
 
 const fileQuery = (params: Record<string, string>): string => {
   const sp = new URLSearchParams(params);
@@ -48,6 +76,7 @@ const fileQuery = (params: Record<string, string>): string => {
 };
 
 export const fileUrl = (
+  token: string | null,
   project: string,
   hash: string,
   kind: "screenshot" | "baseline" | "diff",
@@ -55,10 +84,11 @@ export const fileUrl = (
 ): string => {
   const params: Record<string, string> = { project, hash, kind };
   if (ts) params.ts = ts;
-  return `/api/file?${fileQuery(params)}`;
+  return withToken(`/api/file?${fileQuery(params)}`, token);
 };
 
 export const thumbUrl = (
+  token: string | null,
   project: string,
   hash: string,
   kind: "screenshot" | "baseline" | "diff",
@@ -67,5 +97,5 @@ export const thumbUrl = (
 ): string => {
   const params: Record<string, string> = { project, hash, kind, w: String(width) };
   if (ts) params.ts = ts;
-  return `/api/thumb?${fileQuery(params)}`;
+  return withToken(`/api/thumb?${fileQuery(params)}`, token);
 };

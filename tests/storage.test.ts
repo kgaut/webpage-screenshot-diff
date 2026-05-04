@@ -53,10 +53,7 @@ describe("storage", () => {
     await ensureRoot(tmpDir);
     const paths = buildProjectPaths(tmpDir, "acme/website");
     await ensureLayout(paths);
-    const stats = await Promise.all([
-      fs.stat(paths.baselineDir),
-      fs.stat(paths.historyDir),
-    ]);
+    const stats = await Promise.all([fs.stat(paths.baselineDir), fs.stat(paths.historyDir)]);
     expect(stats.every((s) => s.isDirectory())).toBe(true);
     expect(paths.projectDir).toContain(path.join("projects", "acme", "website"));
   });
@@ -89,8 +86,9 @@ describe("storage", () => {
       await new Promise((r) => setTimeout(r, 5));
     }
     await rotateHistory(paths, hash, 3);
-    const remaining = (await fs.readdir(path.join(paths.historyDir, hash)))
-      .filter((f) => f.endsWith(".png") && !f.endsWith(".diff.png"));
+    const remaining = (await fs.readdir(path.join(paths.historyDir, hash))).filter(
+      (f) => f.endsWith(".png") && !f.endsWith(".diff.png"),
+    );
     expect(remaining.length).toBe(3);
   });
 

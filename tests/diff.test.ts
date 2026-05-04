@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { PNG } from "pngjs";
+import { describe, expect, it } from "vitest";
 import { comparePngs } from "../src/diff.js";
 
 const makePng = (width: number, height: number, fill: [number, number, number, number]): Buffer => {
@@ -47,7 +47,12 @@ describe("comparePngs", () => {
 
   it("detects partial differences and produces a diff image", () => {
     const base = makePng(20, 20, [255, 255, 255, 255]);
-    const modified = paintRect(makePng(20, 20, [255, 255, 255, 255]), 20, { x: 0, y: 0, w: 5, h: 5 }, [0, 0, 0, 255]);
+    const modified = paintRect(
+      makePng(20, 20, [255, 255, 255, 255]),
+      20,
+      { x: 0, y: 0, w: 5, h: 5 },
+      [0, 0, 0, 255],
+    );
     const result = comparePngs(base, modified);
     expect(result.ratio).toBeGreaterThan(0);
     expect(result.ratio).toBeLessThan(1);

@@ -23,6 +23,7 @@ export type Config = {
   defaultViewport: { width: number; height: number };
   navigationTimeoutMs: number;
   logLevel: "debug" | "info" | "warn" | "error";
+  adminToken: string | null;
 };
 
 export const loadConfig = (): Config => {
@@ -30,6 +31,7 @@ export const loadConfig = (): Config => {
   if (!["debug", "info", "warn", "error"].includes(logLevel)) {
     throw new Error(`Invalid LOG_LEVEL: ${logLevel}`);
   }
+  const adminToken = process.env.ADMIN_TOKEN ?? "";
   return {
     port: intEnv("PORT", 3000),
     dataDir: path.resolve(stringEnv("DATA_DIR", "/data")),
@@ -41,5 +43,6 @@ export const loadConfig = (): Config => {
     },
     navigationTimeoutMs: intEnv("NAVIGATION_TIMEOUT_MS", 30_000),
     logLevel: logLevel as Config["logLevel"],
+    adminToken: adminToken.length > 0 ? adminToken : null,
   };
 };
