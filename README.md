@@ -5,20 +5,25 @@ précédent pour détecter des régressions visuelles (CSS, layout). Conçu pour
 être appelé depuis une pipeline CI/CD : un code HTTP `422` indique qu'au moins
 une page a divergé au-delà du seuil autorisé.
 
+Inclut un mini front (Vite + React) qui affiche la liste des projets, les
+pages capturées et l'historique des screenshots avec miniatures.
+
 ## Fonctionnement
 
-- Un `POST /diff` reçoit une liste d'URL et un seuil (% de pixels modifiés
-  acceptés).
+- Un `POST /diff` reçoit un nom de projet, une liste d'URL et un seuil (% de
+  pixels modifiés acceptés).
 - Pour chaque URL, le service capture un screenshot pleine page avec
   Playwright (Chromium).
 - Le screenshot est comparé à la baseline (le batch précédent) avec
   `pixelmatch`.
 - Si l'écart dépasse le seuil, la requête échoue (HTTP 422) et l'image diff
   est persistée sur le volume.
-- Au premier run d'une URL, le screenshot devient automatiquement la
-  baseline.
+- Au premier run d'une URL dans un projet, le screenshot devient
+  automatiquement la baseline.
 - Les `HISTORY_SIZE` dernières captures par URL sont conservées (rotation
   automatique).
+- Le dashboard est servi sur `/` et permet de naviguer projets → pages →
+  historique.
 
 ## API
 
@@ -26,6 +31,7 @@ une page a divergé au-delà du seuil autorisé.
 
 ```json
 {
+  "project": "acme/website",
   "threshold": 0.1,
   "updateBaselineOnFailure": false,
   "viewport": { "width": 1280, "height": 800 },
@@ -38,6 +44,7 @@ une page a divergé au-delà du seuil autorisé.
 
 | Champ | Type | Défaut | Description |
 |-------|------|--------|-------------|
+| `project` | `string` | — | **Requis.** Namespace du projet, ex: `acme/website`. Caractères autorisés : `[A-Za-z0-9._-]`, séparés par `/`. |
 | `urls` | `string[]` | — | URLs absolues à capturer (1–200). |
 | `threshold` | `number` | `0` | Pourcentage de pixels modifiés autorisé (0–100). |
 | `updateBaselineOnFailure` | `boolean` | `false` | Si `true`, la baseline est remplacée même quand le seuil est dépassé. |
@@ -47,13 +54,14 @@ Réponses :
 
 - `200 OK` — toutes les URL passent le seuil.
 - `422 Unprocessable Entity` — au moins une URL dépasse le seuil ou a échoué.
-- `400 Bad Request` — JSON invalide.
+- `400 Bad Request` — JSON invalide / nom de projet invalide.
 
 Corps de réponse :
 
 ```json
 {
   "ok": true,
+  "project": "acme/website",
   "threshold": 0.1,
   "results": [
     {
@@ -62,8 +70,8 @@ Corps de réponse :
       "created": false,
       "diffRatio": 0.0002,
       "thresholdExceeded": false,
-      "screenshot": "/data/history/ab12.../2026-05-04T13-30-00-000Z.png",
-      "diffImage": "/data/history/ab12.../2026-05-04T13-30-00-000Z.diff.png"
+      "screenshot": "/data/projects/acme/website/history/ab12.../<ts>.png",
+      "diffImage": "/data/projects/acme/website/history/ab12.../<ts>.diff.png"
     }
   ]
 }
@@ -73,22 +81,41 @@ Corps de réponse :
 
 Liveness probe (HTTP 200 si le serveur tourne).
 
+### Endpoints du dashboard (lecture seule)
+
+- `GET /api/projects` — liste des projets vus avec dates et nombre de pages.
+- `GET /api/projects/:project/pages` — pages capturées du projet (URL,
+  dernier diff, état, nombre de captures).
+- `GET /api/projects/:project/pages/:hash/history` — historique de la page
+  (timestamps, ratios de diff, présence d'image diff).
+- `GET /api/file?project=…&kind=baseline|screenshot|diff&hash=…&ts=…` —
+  télécharge le PNG demandé.
+- `GET /api/thumb?project=…&kind=…&hash=…&ts=…&w=240` — miniature PNG
+  générée paresseusement (cache à côté du fichier source).
+
+Le nom de projet doit être URL-encodé dans le path (`acme%2Fwebsite`).
+
 ## Layout du volume
 
 ```
 /data/
-  baselines/
-    <sha256>.png             # référence ("batch précédent")
-    <sha256>.json            # méta { url, capturedAt, viewport }
-  history/
-    <sha256>/
-      <iso-timestamp>.png
-      <iso-timestamp>.diff.png
-      <iso-timestamp>.json
-  index.json                 # mapping hash -> url (lisibilité humaine)
+  projects.json                       # mapping project -> { firstSeenAt, lastSeenAt }
+  projects/
+    <project>/                        # ex: acme/website (peut contenir des slashes)
+      baselines/
+        <sha256>.png                  # référence ("batch précédent")
+        <sha256>.json                 # méta { url, capturedAt, viewport }
+      history/
+        <sha256>/
+          <iso-timestamp>.png
+          <iso-timestamp>.diff.png    # si diffRatio > 0
+          <iso-timestamp>.json        # méta + diffRatio + ok
+          <iso-timestamp>.thumb-240.png  # cache miniatures
+      index.json                      # mapping hash -> url (lisibilité humaine)
 ```
 
-Le hash est `sha256(url)` : une URL renommée crée une nouvelle baseline.
+Le hash est `sha256(url)`. Les baselines sont scopées au projet : la même URL
+dans deux projets a deux baselines indépendantes.
 
 ## Variables d'environnement
 
@@ -102,6 +129,7 @@ Le hash est `sha256(url)` : une URL renommée crée une nouvelle baseline.
 | `DEFAULT_VIEWPORT_HEIGHT` | `800` | Hauteur du viewport par défaut. |
 | `NAVIGATION_TIMEOUT_MS` | `30000` | Timeout `page.goto`. |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
+| `WEB_DIST_DIR` | auto | Surcharge le chemin du build SPA (sinon `web/dist` à côté du binaire). |
 
 ## Docker
 
@@ -110,6 +138,9 @@ Le hash est `sha256(url)` : une URL renommée crée une nouvelle baseline.
 ```bash
 docker build -t screenshot-diff:latest .
 ```
+
+Le `Dockerfile` construit le backend (TypeScript) **et** la SPA (Vite) en
+multi-stage et n'embarque que les binaires + `web/dist` dans l'image finale.
 
 ### Lancement (run direct)
 
@@ -127,7 +158,9 @@ Points de montage :
 
 | Chemin conteneur | Rôle | Recommandation hôte |
 |------------------|------|---------------------|
-| `/data` | baselines + historique + diffs | volume nommé ou répertoire mis en cache par la CI |
+| `/data` | baselines + historique + diffs + index | volume nommé ou répertoire mis en cache par la CI |
+
+Le dashboard est ensuite accessible sur <http://localhost:3000/>.
 
 ### docker-compose
 
@@ -159,6 +192,7 @@ Trois stratégies possibles :
 curl -X POST http://localhost:3000/diff \
   -H 'content-type: application/json' \
   -d '{
+    "project": "acme/website",
     "threshold": 0.1,
     "urls": [
       "https://example.com/",
@@ -175,6 +209,7 @@ curl -X POST http://localhost:3000/diff \
 curl -X POST http://localhost:3000/diff \
   -H 'content-type: application/json' \
   -d '{
+    "project": "acme/website",
     "threshold": 0.1,
     "viewport": { "width": 1440, "height": 900 },
     "urls": ["https://example.com/"]
@@ -189,6 +224,7 @@ curl -X POST http://localhost:3000/diff \
 curl -X POST http://localhost:3000/diff \
   -H 'content-type: application/json' \
   -d '{
+    "project": "acme/website",
     "threshold": 100,
     "updateBaselineOnFailure": true,
     "urls": ["https://example.com/"]
@@ -210,6 +246,8 @@ curl -fsS -X POST http://localhost:3000/diff \
 jobs:
   visual-regression:
     runs-on: ubuntu-latest
+    env:
+      PROJECT: ${{ github.repository }}      # ex: acme/website
     steps:
       - uses: actions/checkout@v4
 
@@ -233,10 +271,11 @@ jobs:
 
       - name: Run visual diff
         run: |
-          curl -fsS -X POST http://localhost:3000/diff \
-            -H 'content-type: application/json' \
-            -d @.github/visual-urls.json \
-            -o diff-result.json
+          jq --arg p "$PROJECT" '. + {project: $p}' .github/visual-urls.json \
+            | curl -fsS -X POST http://localhost:3000/diff \
+                -H 'content-type: application/json' \
+                -d @- \
+                -o diff-result.json
 
       - name: Upload artefacts on failure
         if: failure()
@@ -244,7 +283,7 @@ jobs:
         with:
           name: visual-diff
           path: |
-            screenshots/history
+            screenshots/projects
             diff-result.json
 ```
 
@@ -255,6 +294,8 @@ visual-regression:
   image: docker:24
   services:
     - docker:24-dind
+  variables:
+    PROJECT: $CI_PROJECT_PATH                # ex: acme/website
   cache:
     key: visual-regression-$CI_COMMIT_REF_SLUG
     paths: [screenshots/]
@@ -265,29 +306,38 @@ visual-regression:
         $CI_REGISTRY_IMAGE/screenshot-diff:latest
     - until curl -fsS http://docker:3000/healthz; do sleep 1; done
     - |
-      curl -fsS -X POST http://docker:3000/diff \
-        -H 'content-type: application/json' \
-        -d @ci/visual-urls.json
+      jq --arg p "$PROJECT" '. + {project: $p}' ci/visual-urls.json \
+        | curl -fsS -X POST http://docker:3000/diff \
+            -H 'content-type: application/json' \
+            -d @-
   artifacts:
     when: on_failure
-    paths: [screenshots/history]
+    paths: [screenshots/projects]
 ```
 
 ## Développement local
 
 ```bash
+# Backend
 npm install
 npx playwright install chromium
-DATA_DIR=./screenshots npm run dev   # hot reload via tsx
-npm test                              # tests unitaires (vitest)
-npm run build                         # compile TS -> dist/
+DATA_DIR=./screenshots npm run dev   # hot reload via tsx, port 3000
+
+# SPA (dans un autre terminal)
+npm run dev:web                       # Vite, port 5173, proxie /api & /diff
+```
+
+Tests :
+
+```bash
+npm test                              # vitest, 14 tests (diff + storage)
+npm run build                         # build backend + SPA
+npm start                             # node dist/server.js (sert /api + SPA)
 ```
 
 ## Stack
 
-- Node.js 20+ / TypeScript / ESM
-- Playwright (Chromium)
-- Express
-- pixelmatch + pngjs
-- zod (validation)
-- vitest (tests)
+- **Backend** : Node.js 20+ / TypeScript / ESM, Express, Playwright (Chromium),
+  pixelmatch + pngjs, sharp (miniatures), zod, vitest.
+- **Front** : Vite + React + react-router-dom (build statique servi par le
+  backend en production).

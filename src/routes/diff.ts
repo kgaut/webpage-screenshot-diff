@@ -7,14 +7,18 @@ import { mapConcurrent } from "../concurrency.js";
 import { comparePngs } from "../diff.js";
 import { sha256 } from "../hash.js";
 import {
-  buildPaths,
+  buildProjectPaths,
   ensureLayout,
+  ensureRoot,
+  isValidProjectName,
   newHistoryEntry,
   readBaseline,
+  recordProjectActivity,
   rotateHistory,
   updateIndex,
   writeBaseline,
   writeHistory,
+  type ProjectPaths,
 } from "../storage.js";
 import type { DiffResponse, UrlResult } from "../types.js";
 
@@ -24,6 +28,13 @@ const viewportSchema = z.object({
 });
 
 const requestSchema = z.object({
+  project: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine(isValidProjectName, {
+      message: "project must match [A-Za-z0-9._-] segments separated by '/'",
+    }),
   threshold: z.number().min(0).max(100).default(0),
   updateBaselineOnFailure: z.boolean().default(false),
   viewport: viewportSchema.optional(),
@@ -31,17 +42,17 @@ const requestSchema = z.object({
 });
 
 export const makeDiffHandler = (config: Config) => {
-  const paths = buildPaths(config.dataDir);
-
   return async (req: Request, res: Response): Promise<void> => {
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "invalid_request", details: parsed.error.issues });
       return;
     }
-    const { threshold, updateBaselineOnFailure, viewport, urls } = parsed.data;
+    const { project, threshold, updateBaselineOnFailure, viewport, urls } = parsed.data;
     const effectiveViewport = viewport ?? config.defaultViewport;
 
+    await ensureRoot(config.dataDir);
+    const paths = buildProjectPaths(config.dataDir, project);
     await ensureLayout(paths);
 
     const results = await mapConcurrent<string, UrlResult>(
@@ -56,15 +67,17 @@ export const makeDiffHandler = (config: Config) => {
       }),
     );
 
+    await recordProjectActivity(config.dataDir, project, new Date().toISOString());
+
     const ok = results.every((r) => !r.thresholdExceeded && !r.error);
-    const body: DiffResponse = { ok, threshold, results };
+    const body: DiffResponse = { ok, project, threshold, results };
     res.status(ok ? 200 : 422).json(body);
   };
 };
 
 type ProcessCtx = {
   config: Config;
-  paths: ReturnType<typeof buildPaths>;
+  paths: ProjectPaths;
   threshold: number;
   updateBaselineOnFailure: boolean;
   viewport: { width: number; height: number };
