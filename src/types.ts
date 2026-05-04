@@ -1,6 +1,7 @@
 export type Viewport = { width: number; height: number };
 
 export type DiffRequest = {
+  project: string;
   threshold: number;
   updateBaselineOnFailure: boolean;
   viewport?: Viewport;
@@ -20,6 +21,7 @@ export type UrlResult = {
 
 export type DiffResponse = {
   ok: boolean;
+  project: string;
   threshold: number;
   results: UrlResult[];
 };
